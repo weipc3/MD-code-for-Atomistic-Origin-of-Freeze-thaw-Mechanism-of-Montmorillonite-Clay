@@ -1,0 +1,139 @@
+variable       filename1 index   pulling-230k
+
+log            ${filename1}.log
+# ------------------------ INITIALIZATION ----------------------------
+echo   	       screen 
+dimension	   3
+boundary	   p p p
+ 
+atom_style	   full
+units          real
+
+# ----------------------- ATOM DEFINITION ----------------------------
+pair_style     lj/cut/tip4p/long 1  2 1 1 0.1577 10  8.5       
+pair_modify    mix arithmetic   shift yes  
+bond_style     harmonic 
+angle_style    harmonic
+kspace_style   pppm/tip4p 1.0e-4
+read_restart   12nvt-270-230k.restart.200000000.230k     
+
+neighbor	   1.0 bin
+neigh_modify   every 1 delay 0 check yes
+
+# ----------------------- variable ----------------------------
+variable      	T0 equal 230       
+variable      	T1 equal 230       
+variable 	  	P0 equal 1.0 
+variable      	P1 equal 1.0
+variable      	interval equal  1000      
+
+# ----------------------- group ----------------------------
+group   	 	ice type 1 2 
+group    	 	mmt type 3 4 5 6 7 8 9 10 11 12 13  
+group        	oxygen type 1 
+group    	 	cation 	type 7 
+
+region       	iceup  	block    INF INF INF INF 42 INF    
+group 	     	iceup   	region   iceup
+
+region       	mmtdown  	block    INF INF INF INF INF  12.5  
+group 	     	mmtdown   	region   mmtdown
+group        	mmtup      subtract mmt mmtdown
+group        	nvegroup   subtract all iceup mmtdown
+group        	icedown    subtract ice iceup
+
+fix      	 	shakewatandice  ice shake 0.0001 20  0  b  1   a  1     
+
+compute      	mmt        mmt      temp
+compute      	mmtup      mmtup    temp
+compute      	mmtdown    down     temp
+compute      	ice        ice      temp
+compute      	icedown    icedown  temp
+# ----------------------- ice-clay distance ----------------------------
+variable 		zTop  	    equal z[11194]     
+variable 		zBottom 	equal z[15738]   
+variable 		zLength 	equal "abs(v_zTop-v_zBottom)"
+
+compute     	ke_atom all ke/atom 
+variable    	KB equal 1.987252e-3   
+variable    	TEMP atom c_ke_atom/1.5/${KB}
+
+# ----------------------- NVT  ----------------------------
+fix 			1 nvegroup nve 
+fix 			2 mmtup langevin ${T0} ${T1} 1000 699411 
+
+velocity 		mmtdown set 0 0 0     
+fix 			3  mmtdown setforce  0.0  0.0  0.0
+
+reset_timestep	0 
+timestep 		1
+dump 			1 all custom ${interval}   ${filename1}.lammpstrj id type x y z xu yu zu vx vy vz  v_TEMP  
+
+dump       		2 all xyz    ${interval}   ${filename1}.xyz    
+dump_modify 	2 element O H Al Si N Oh Na Ho Mg Obos Ohs Obts Al   
+
+thermo 			${interval}
+thermo_style 	custom step temp vol lx ly lz press  epair evdwl ecoul elong ebond eangle pe ke etotal  v_zLength 
+
+# ----------------------- energy ----------------------------
+variable 		epair equal epair
+variable 		evdwl equal evdwl
+variable 		ecoul equal ecoul
+variable 		elong equal elong
+variable 		ebond equal ebond
+variable 		eangle equal eangle
+variable 		ke equal ke  
+variable 		pe equal pe
+variable 		etotal equal etotal
+fix 			output_thermo all ave/time  100 10 ${interval} v_zLength v_epair  v_evdwl v_ecoul v_elong v_ebond  v_eangle v_ke  v_pe  v_etotal file ${filename1}-thermo.dat    
+fix  			out_E  all ave/time  100 10 ${interval}  v_zLength  v_etotal  file ${filename1}-total-E.dat
+
+# ----------------------- MSD ----------------------------
+compute 		msd oxygen msd com yes 
+fix 			output_msd oxygen ave/time ${interval} 1  ${interval}  c_msd[1] c_msd[2] c_msd[3] c_msd[4] file ${filename1}-ice-msd.dat    
+compute 		msd_2 cation msd com yes 
+fix 			output_msd_2  cation ave/time ${interval} 1  ${interval}  c_msd_2[1] c_msd_2[2] c_msd_2[3] c_msd_2[4] file ${filename1}-cation-msd.dat    
+
+fix 			output_mmttemp   all ave/time  100 10 ${interval}   c_mmt  c_mmtup  c_mmtdown  c_ice  c_icedown file ${filename1}-all-temp.dat    
+
+# ----------------------- pulling distance and force ----------------------------
+velocity 		iceup 	set  0  0  0 units box         
+#fix 			5       iceup  setforce  0.0  0.0  0.0
+fix 			5 		iceup  setforce NULL    NULL NULL 
+fix         	6       iceup  rigid    single force * on on on torque * off off off   
+
+###º∆À„pull distance
+variable	    disx 		equal xcm(iceup,x)
+variable	    disy 		equal xcm(iceup,y)
+variable	    disz 		equal xcm(iceup,z)
+variable        initial_dis equal ${disz}    
+variable        disp 		equal (v_disz-(${initial_dis}))
+
+variable	    m1 			equal  fcm(iceup,z)           
+variable        unit 		equal  1/14.39326185      
+variable        load1 		equal  v_m1*(${unit})
+
+variable		loadx		equal  f_5[1]*(${unit})
+variable		loady		equal  f_5[2]*(${unit})
+variable		loadz		equal  f_5[3]*(${unit})
+
+run				100000   
+write_data    	${filename1}-eq.data
+
+#fix 			9   all  ave/time 100 5 ${interval} v_disp v_loadx v_loady v_loadz file ${filename1}-pulling.dat 
+fix 			10  all  ave/time 100 5 ${interval} v_disx v_disy v_disz v_disp v_loadx v_loady v_loadz file ${filename1}-pulling-all.dat 
+
+fix             7       iceup  smd   cvel  144   -0.0001   tether  NULL   NULL 100  0  
+variable    	f7x                 equal    "f_7[1]/14.39326185"                      
+variable    	f7y                 equal    "f_7[2]/14.39326185" 
+variable    	f7z                 equal    "f_7[3]/14.39326185" 
+variable    	f7total             equal    "f_7[4]/14.39326185"                  
+
+fix             outputForceH    iceup     ave/time 100 5 ${interval}   v_disp  v_f7z  f_7[7]  file  ${filename1}-frictionForce.dat 
+fix             outputother     iceup     ave/time 100 5 ${interval}   v_disp  v_f7x v_f7y v_f7z v_f7total f_7[5]  f_7[6]  f_7[7] file  ${filename1}-PMF.dat  
+
+
+run   			300000    
+
+write_restart 	${filename1}.restart
+write_data    	${filename1}.data
